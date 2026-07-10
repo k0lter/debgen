@@ -298,6 +298,8 @@ Several arguments can be configured through environment variables:
 | Variable | Argument | Used by |
 |---|---|---|
 | `DEBGEN_CONFIG` | `<CONFIG>` | `build` |
+| `DEBGEN_NEWER` | `-N, --only-newer` | `build` |
+| `DEBGEN_UPLOAD` | `-U, --upload` | `build` |
 | `DEBGEN_TAG` | `-T, --tag` | `build` |
 | `DEBGEN_BUILD_DIR` | `-O, --output` | `build` |
 | `DEBGEN_OUTPUT` | `-o, --output` | `download` |

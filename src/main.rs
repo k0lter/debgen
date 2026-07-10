@@ -58,7 +58,7 @@ enum Commands {
         /// Can be a version string (e.g. "1.9.0") or a Debian repo URL
         /// (e.g. "http://repo#dist#section#arch") to fetch the current version.
         /// Fragments default: dist=unstable, section=main, arch=amd64.
-        #[arg(short = 'N', long = "only-newer")]
+        #[arg(short = 'N', long = "only-newer", env = "DEBGEN_NEWER")]
         only_newer: Option<String>,
 
         /// Force rebuild when upstream version matches repo version,
@@ -78,7 +78,7 @@ enum Commands {
         /// Upload resulting packages via dput.
         /// URI format: method://login@fqdn/incoming?key=value&...
         /// Supported query params: hash, allow_unsigned_uploads, allowed_distributions
-        #[arg(short = 'U', long)]
+        #[arg(short = 'U', long, env = "DEBGEN_UPLOAD")]
         upload: Option<String>,
 
         /// Clean build artifacts after build (and upload if -U is set)
