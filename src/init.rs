@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
-use crate::download::{AuthTokens, ParsedUrl, parse_download_url};
+use crate::download::{AuthTokens, GitLabAuth, ParsedUrl, parse_download_url};
 use tracing::{debug, info, warn};
 
 const CONFIG_FILENAME: &str = "debgen.yml";
@@ -96,7 +96,7 @@ struct GlProject {
     name: Option<String>,
 }
 
-fn fetch_gitlab_meta(host: &str, project: &str, token: Option<&str>) -> Result<RepoMeta> {
+fn fetch_gitlab_meta(host: &str, project: &str, token: Option<&GitLabAuth>) -> Result<RepoMeta> {
     let client = build_client()?;
     let encoded = project.replace('/', "%2F");
     let url = format!("https://{}/api/v4/projects/{}", host, encoded);
@@ -106,8 +106,8 @@ fn fetch_gitlab_meta(host: &str, project: &str, token: Option<&str>) -> Result<R
     );
 
     let mut req = client.get(&url);
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {}", t));
+    if let Some(auth) = token {
+        req = auth.apply(req);
     }
 
     let gl: GlProject = req
@@ -252,7 +252,7 @@ pub fn run(location: &str, flavor: Option<&str>, output: &Path, tokens: &AuthTok
                 "[action]Fetching[/] metadata from GitLab ([url]{}[/]) for [pkg]{}[/]",
                 host, project
             );
-            fetch_gitlab_meta(host, project, tokens.gitlab.as_deref()).unwrap_or_else(|e| {
+            fetch_gitlab_meta(host, project, tokens.gitlab.as_ref()).unwrap_or_else(|e| {
                 warn!("Could not fetch GitLab metadata: {}", e);
                 fallback_meta(&parsed)
             })

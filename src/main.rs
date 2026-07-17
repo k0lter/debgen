@@ -18,7 +18,7 @@ use tracing::{debug, error, info};
 
 use crate::builder::DebPkgBuilder;
 use crate::config::DebgenConfig;
-use crate::download::{AuthTokens, parse_download_url, perform_download};
+use crate::download::{AuthTokens, GitLabAuth, parse_download_url, perform_download};
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().bold())
@@ -96,6 +96,10 @@ enum Commands {
         /// GitLab personal access token for private repositories
         #[arg(long, env = "GITLAB_TOKEN", hide_env_values = true)]
         gitlab_token: Option<String>,
+
+        /// GitLab CI/CD job token, sent as the JOB-TOKEN header (defaults to CI_JOB_TOKEN in GitLab CI)
+        #[arg(long, env = "CI_JOB_TOKEN", hide_env_values = true)]
+        gitlab_job_token: Option<String>,
     },
     /// Download and extract a release from GitHub, GitLab, a local path, or a direct URL
     Download {
@@ -117,6 +121,10 @@ enum Commands {
         /// GitLab personal access token for private repositories
         #[arg(long, env = "GITLAB_TOKEN", hide_env_values = true)]
         gitlab_token: Option<String>,
+
+        /// GitLab CI/CD job token, sent as the JOB-TOKEN header (defaults to CI_JOB_TOKEN in GitLab CI)
+        #[arg(long, env = "CI_JOB_TOKEN", hide_env_values = true)]
+        gitlab_job_token: Option<String>,
     },
     /// Inspect package metadata from a Debian repository
     Checkrepo {
@@ -166,7 +174,17 @@ enum Commands {
         /// GitLab personal access token for private repositories
         #[arg(long, env = "GITLAB_TOKEN", hide_env_values = true)]
         gitlab_token: Option<String>,
+
+        /// GitLab CI/CD job token, sent as the JOB-TOKEN header (defaults to CI_JOB_TOKEN in GitLab CI)
+        #[arg(long, env = "CI_JOB_TOKEN", hide_env_values = true)]
+        gitlab_job_token: Option<String>,
     },
+}
+
+/// Prefer an explicit personal access token over a CI job token.
+fn gitlab_auth(pat: Option<String>, job_token: Option<String>) -> Option<GitLabAuth> {
+    pat.map(GitLabAuth::PrivateToken)
+        .or_else(|| job_token.map(GitLabAuth::JobToken))
 }
 
 fn run() -> anyhow::Result<()> {
@@ -186,6 +204,7 @@ fn run() -> anyhow::Result<()> {
             keep_sources,
             github_token,
             gitlab_token,
+            gitlab_job_token,
         } => {
             info!(
                 "[action]Starting[/] Debian package build from [path]{}[/]",
@@ -194,7 +213,7 @@ fn run() -> anyhow::Result<()> {
             let cfg = DebgenConfig::load(&config)?;
             let tokens = AuthTokens {
                 github: github_token,
-                gitlab: gitlab_token,
+                gitlab: gitlab_auth(gitlab_token, gitlab_job_token),
             };
             let mut builder = DebPkgBuilder::new(
                 cfg,
@@ -222,13 +241,14 @@ fn run() -> anyhow::Result<()> {
             output,
             github_token,
             gitlab_token,
+            gitlab_job_token,
         } => {
             let parsed = parse_download_url(&url)?;
             debug!("Download target: [field]{:?}[/]", parsed);
             std::fs::create_dir_all(&output)?;
             let tokens = AuthTokens {
                 github: github_token,
-                gitlab: gitlab_token,
+                gitlab: gitlab_auth(gitlab_token, gitlab_job_token),
             };
             let result = perform_download(&parsed, &output, flavor.as_deref(), &tokens)?;
             info!("Downloaded to [path]{}[/]", result.extract_path.display());
@@ -253,10 +273,11 @@ fn run() -> anyhow::Result<()> {
             output,
             github_token,
             gitlab_token,
+            gitlab_job_token,
         } => {
             let tokens = AuthTokens {
                 github: github_token,
-                gitlab: gitlab_token,
+                gitlab: gitlab_auth(gitlab_token, gitlab_job_token),
             };
             init::run(&location, flavor.as_deref(), &output, &tokens)?;
         }

@@ -15,7 +15,48 @@ use tracing::{debug, info, trace, warn};
 #[derive(Debug, Clone, Default)]
 pub struct AuthTokens {
     pub github: Option<String>,
-    pub gitlab: Option<String>,
+    pub gitlab: Option<GitLabAuth>,
+}
+
+/// GitLab authentication scheme. GitLab does not accept a CI job token via
+/// `Authorization: Bearer` nor `PRIVATE-TOKEN`; it must be sent as `JOB-TOKEN`.
+#[derive(Debug, Clone)]
+pub enum GitLabAuth {
+    /// Personal/project/group access token, sent as `Authorization: Bearer`.
+    PrivateToken(String),
+    /// CI/CD job token (`CI_JOB_TOKEN`), sent as `JOB-TOKEN`.
+    JobToken(String),
+}
+
+impl GitLabAuth {
+    /// Apply the appropriate GitLab authentication header to a request.
+    pub fn apply(&self, req: RequestBuilder) -> RequestBuilder {
+        match self {
+            GitLabAuth::PrivateToken(t) => req.header("Authorization", format!("Bearer {}", t)),
+            GitLabAuth::JobToken(t) => req.header("JOB-TOKEN", t),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Auth<'a> {
+    None,
+    Bearer(&'a str),
+    GitLab(&'a GitLabAuth),
+}
+
+impl Auth<'_> {
+    fn apply(&self, req: RequestBuilder) -> RequestBuilder {
+        match self {
+            Auth::None => req,
+            Auth::Bearer(t) => req.header("Authorization", format!("Bearer {}", t)),
+            Auth::GitLab(a) => a.apply(req),
+        }
+    }
+
+    fn is_some(&self) -> bool {
+        !matches!(self, Auth::None)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,21 +148,20 @@ fn build_http_client(user_agent: &str) -> Result<Client> {
         .context("Failed to build HTTP client")
 }
 
-fn auth_get(client: &Client, url: &str, token: Option<&str>) -> RequestBuilder {
-    let mut req = client.get(url);
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {}", t));
+fn auth_get(client: &Client, url: &str, auth: Auth) -> RequestBuilder {
+    let req = client.get(url);
+    if auth.is_some() {
         debug!("[action]Using authentication token[/]");
     }
-    req
+    auth.apply(req)
 }
 
 /// Download a file from a URL to a destination path, with streaming.
-fn download_file(client: &Client, url: &str, dest: &Path, token: Option<&str>) -> Result<()> {
+fn download_file(client: &Client, url: &str, dest: &Path, auth: Auth) -> Result<()> {
     info!("[action]Downloading[/] [url]{}[/]", url);
     debug!("Download destination: [path]{}[/]", dest.display());
 
-    let mut response = auth_get(client, url, token)
+    let mut response = auth_get(client, url, auth)
         .send()
         .context(format!("Failed to send request to [url]{}[/]", url))?
         .error_for_status()
@@ -570,6 +610,7 @@ pub fn github_download(
         "[action]Looking for[/] GitHub release of [pkg]{}[/] (flavor: [field]{}[/])",
         project, flavor
     );
+    let auth = token.map_or(Auth::None, Auth::Bearer);
     let client = build_http_client("GitHub-Release-Downloader/1.0")?;
 
     let api_url = format!("https://api.github.com/repos/{}/releases/latest", project);
@@ -578,7 +619,7 @@ pub fn github_download(
         api_url
     );
 
-    let release: GhRelease = auth_get(&client, &api_url, token)
+    let release: GhRelease = auth_get(&client, &api_url, auth)
         .send()
         .context(format!(
             "Failed to reach GitHub API for [pkg]{}[/]",
@@ -639,7 +680,7 @@ pub fn github_download(
         .unwrap_or("download");
     let file_path = work_dir.join(filename);
 
-    download_file(&client, &asset.browser_download_url, &file_path, token)?;
+    download_file(&client, &asset.browser_download_url, &file_path, auth)?;
     extract_archive(&file_path, work_dir)?;
 
     let extract_path = resolve_extract_root(work_dir)?;
@@ -679,12 +720,13 @@ pub fn gitlab_download(
     project: &str,
     flavor: &Regex,
     work_dir: &Path,
-    token: Option<&str>,
+    token: Option<&GitLabAuth>,
 ) -> Result<DownloadResult> {
     info!(
         "[action]Looking for[/] GitLab release of [pkg]{}[/] on [url]{}[/] (flavor: [field]{}[/])",
         project, host, flavor
     );
+    let auth = token.map_or(Auth::None, Auth::GitLab);
     let client = build_http_client("GitLab-Release-Downloader/1.0")?;
 
     let encoded_project = project.replace('/', "%2F");
@@ -694,7 +736,7 @@ pub fn gitlab_download(
     );
     debug!("[action]Fetching[/] release info from [url]{}[/]", api_url);
 
-    let releases: Vec<GlRelease> = auth_get(&client, &api_url, token)
+    let releases: Vec<GlRelease> = auth_get(&client, &api_url, auth)
         .send()
         .context(format!(
             "Failed to reach GitLab API at [url]{}[/] for [pkg]{}[/]",
@@ -780,7 +822,7 @@ pub fn gitlab_download(
     let filename = download_url.rsplit('/').next().unwrap_or("download");
     let file_path = work_dir.join(filename);
 
-    download_file(&client, download_url, &file_path, token)?;
+    download_file(&client, download_url, &file_path, auth)?;
     extract_archive(&file_path, work_dir)?;
 
     let extract_path = resolve_extract_root(work_dir)?;
@@ -1025,7 +1067,7 @@ pub fn http_download(url: &str, work_dir: &Path, flavor: Option<&Regex>) -> Resu
     let filename = basename_from_url(&archive_url).unwrap_or_else(|| "download".to_string());
     let file_path = work_dir.join(filename);
 
-    download_file(&client, &archive_url, &file_path, None)?;
+    download_file(&client, &archive_url, &file_path, Auth::None)?;
     extract_archive(&file_path, work_dir)?;
 
     let extract_path = resolve_extract_root(work_dir)?;
@@ -1134,13 +1176,8 @@ pub fn perform_download(
                 tmp_path.display()
             );
 
-            let result = gitlab_download(
-                host,
-                project,
-                &flavor_re,
-                tmp_path,
-                tokens.gitlab.as_deref(),
-            )?;
+            let result =
+                gitlab_download(host, project, &flavor_re, tmp_path, tokens.gitlab.as_ref())?;
             move_contents(&result.extract_path, build_root)?;
             finalize_download(build_root, result)
         }
@@ -1218,6 +1255,28 @@ mod tests {
             selected.map(|(url, _)| url),
             Some("https://cdn.example.org/geoip-db_1.0.20260618.tar.xz".to_string())
         );
+    }
+
+    #[test]
+    fn gitlab_job_token_uses_job_token_header_not_bearer() {
+        let client = Client::new();
+        let req = GitLabAuth::JobToken("secret".into())
+            .apply(client.get("https://gitlab.example.com/api/v4/projects/1/releases"))
+            .build()
+            .unwrap();
+        assert_eq!(req.headers().get("JOB-TOKEN").unwrap(), "secret");
+        assert!(req.headers().get("Authorization").is_none());
+    }
+
+    #[test]
+    fn gitlab_private_token_uses_bearer_header() {
+        let client = Client::new();
+        let req = GitLabAuth::PrivateToken("secret".into())
+            .apply(client.get("https://gitlab.example.com/api/v4/projects/1/releases"))
+            .build()
+            .unwrap();
+        assert_eq!(req.headers().get("Authorization").unwrap(), "Bearer secret");
+        assert!(req.headers().get("JOB-TOKEN").is_none());
     }
 
     #[test]

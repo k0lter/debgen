@@ -311,6 +311,7 @@ Several arguments can be configured through environment variables:
 | `EMAIL` | (maintainer auto-detection fallback) | `build` |
 | `GITHUB_TOKEN` | `--github-token` | `build`, `download`, `init` |
 | `GITLAB_TOKEN` | `--gitlab-token` | `build`, `download`, `init` |
+| `CI_JOB_TOKEN` | `--gitlab-job-token` | `build`, `download`, `init` |
 
 ## Location schemes
 
